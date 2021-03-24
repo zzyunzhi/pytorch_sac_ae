@@ -67,7 +67,7 @@ def parse_args():
     parser.add_argument('--alpha_beta', default=0.5, type=float)
     # misc
     parser.add_argument('--seed', default=1, type=int)
-    parser.add_argument('--work_dir', default='.', type=str)
+    parser.add_argument('--work_dir', default='./data/', type=str)
     parser.add_argument('--save_tb', default=False, action='store_true')
     parser.add_argument('--save_model', default=False, action='store_true')
     parser.add_argument('--save_buffer', default=False, action='store_true')
@@ -86,7 +86,11 @@ def evaluate(env, agent, video, num_episodes, L, step):
         while not done:
             with utils.eval_mode(agent):
                 action = agent.select_action(obs)
-            obs, reward, done, _ = env.step(action)
+            try:
+                obs, reward, done, _ = env.step(action)
+            except Exception as e:
+                print(e)
+                import ipdb; ipdb.set_trace()
             video.record(env)
             episode_reward += reward
 
@@ -133,14 +137,23 @@ def make_agent(obs_shape, action_shape, args, device):
 
 def main():
     args = parse_args()
+    # # FIXME: toy run
+    # args.image_size = 20
+    # args.num_layers = None
+    # args.encoder_type = 'pixel_vq'
+    # args.decoder_type = 'pixel_vq'
+    # args.init_steps = 1
+
     utils.set_seed_everywhere(args.seed)
+
+    from_pixel = args.encoder_type in ['pixel', 'pixel_vq']
 
     env = dmc2gym.make(
         domain_name=args.domain_name,
         task_name=args.task_name,
         seed=args.seed,
         visualize_reward=False,
-        from_pixels=(args.encoder_type == 'pixel'),
+        from_pixels=from_pixel,
         height=args.image_size,
         width=args.image_size,
         frame_skip=args.action_repeat
@@ -148,7 +161,7 @@ def main():
     env.seed(args.seed)
 
     # stack several consecutive frames together
-    if args.encoder_type == 'pixel':
+    if from_pixel:
         env = utils.FrameStack(env, k=args.frame_stack)
 
     utils.make_dir(args.work_dir)
@@ -162,6 +175,7 @@ def main():
         json.dump(vars(args), f, sort_keys=True, indent=4)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('device', device)
 
     # the dmc2gym wrapper standardizes actions
     assert env.action_space.low.min() >= -1

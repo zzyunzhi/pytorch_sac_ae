@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 
 from encoder import OUT_DIM
+from models.decoder import Decoder
+from models.quantizer import VectorQuantizer
 
 
 class PixelDecoder(nn.Module):
@@ -62,7 +64,42 @@ class PixelDecoder(nn.Module):
         L.log_param('train_decoder/fc', self.fc, step)
 
 
-_AVAILABLE_DECODERS = {'pixel': PixelDecoder}
+class PixelVQDecoder(nn.Module):
+    def __init__(self, obs_shape, feature_dim, num_layers=2, num_filters=32):
+        super().__init__()
+
+        h_dim = num_filters
+        n_res_layers = 2
+        res_h_dim = num_filters
+        embedding_dim = feature_dim
+
+        self.decoder = Decoder(embedding_dim, h_dim, n_res_layers, res_h_dim, out_dim=obs_shape[0])
+
+        self.outputs = dict()
+
+    def forward(self, z_q):
+        x_hat = self.decoder(z_q)
+        self.outputs['obs'] = x_hat
+
+        return x_hat
+
+    def log(self, L, step, log_freq):
+        if step % log_freq != 0:
+            return
+
+        for k, v in self.outputs.items():
+            L.log_histogram('train_decoder/%s_hist' % k, v, step)
+            if len(v.shape) > 2:
+                L.log_image('train_decoder/%s_i' % k, v[0], step)
+        #
+        # for i in range(self.num_layers):
+        #     L.log_param(
+        #         'train_decoder/deconv%s' % (i + 1), self.deconvs[i], step
+        #     )
+        # L.log_param('train_decoder/fc', self.fc, step)
+
+
+_AVAILABLE_DECODERS = {'pixel': PixelDecoder, 'pixel_vq': PixelVQDecoder}
 
 
 def make_decoder(

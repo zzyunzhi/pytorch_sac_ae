@@ -34,12 +34,14 @@ def weight_init(m):
     """Custom weight init for Conv2D and Linear layers."""
     if isinstance(m, nn.Linear):
         nn.init.orthogonal_(m.weight.data)
-        m.bias.data.fill_(0.0)
+        if m.bias is not None:
+            m.bias.data.fill_(0.0)
     elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         # delta-orthogonal init from https://arxiv.org/pdf/1806.05393.pdf
         assert m.weight.size(2) == m.weight.size(3)
         m.weight.data.fill_(0.0)
-        m.bias.data.fill_(0.0)
+        if m.bias is not None:
+            m.bias.data.fill_(0.0)
         mid = m.weight.size(2) // 2
         gain = nn.init.calculate_gain('relu')
         nn.init.orthogonal_(m.weight.data[:, :, mid, mid], gain)
@@ -224,6 +226,7 @@ class SacAeAgent(object):
         self.critic_target_update_freq = critic_target_update_freq
         self.decoder_update_freq = decoder_update_freq
         self.decoder_latent_lambda = decoder_latent_lambda
+        self.encoder_type = encoder_type
 
         self.actor = Actor(
             obs_shape, action_shape, hidden_dim, encoder_type,
@@ -372,14 +375,25 @@ class SacAeAgent(object):
         if target_obs.dim() == 4:
             # preprocess images to be in [-0.5, 0.5] range
             target_obs = utils.preprocess_obs(target_obs)
-        rec_obs = self.decoder(h)
+
+        if self.encoder_type == 'pixel_vq':
+            vq_out = self.critic.encoder.outputs
+            embedding_loss = vq_out['embedding_loss']
+            z_q = vq_out['z_q']
+            rec_obs = self.decoder(z_q)
+            aux_loss = embedding_loss
+        else:
+            rec_obs = self.decoder(h)
+            aux_loss = torch.zeros(()).to(self.device)
+
+        assert target_obs.shape == rec_obs.shape
         rec_loss = F.mse_loss(target_obs, rec_obs)
 
         # add L2 penalty on latent representation
         # see https://arxiv.org/pdf/1903.12436.pdf
         latent_loss = (0.5 * h.pow(2).sum(1)).mean()
 
-        loss = rec_loss + self.decoder_latent_lambda * latent_loss
+        loss = rec_loss + self.decoder_latent_lambda * latent_loss + aux_loss  # TODO: * lmbda
         self.encoder_optimizer.zero_grad()
         self.decoder_optimizer.zero_grad()
         loss.backward()
@@ -392,6 +406,8 @@ class SacAeAgent(object):
 
     def update(self, replay_buffer, L, step):
         obs, action, reward, next_obs, not_done = replay_buffer.sample()
+
+        self.update_decoder(obs, obs, L, step)  # FIXME: DEBUG
 
         L.log('train/batch_reward', reward.mean(), step)
 
